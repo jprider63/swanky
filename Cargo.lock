@@ -2990,6 +2990,7 @@ name = "swanky-sieve-ir-api"
 version = "0.6.0"
 dependencies = [
  "swanky-error",
+ "swanky-field",
  "swanky-field-binary",
  "swanky-field-ff-primes",
 ]

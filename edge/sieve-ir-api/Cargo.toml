@@ -21,3 +21,4 @@ workspace = true
 
 [dependencies]
 swanky-error.workspace = true
+swanky-field.workspace = true

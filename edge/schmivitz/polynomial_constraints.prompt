@@ -1,0 +1,79 @@
+The goal is to implement the protocol described below for polynomial constraints check.
+
+Here are a few important points:
+- The protocol is based on VOLE.
+- Let $\mathbb{F}_p$ be a finite field and let $\mathbb{F}_{p^r}$ be a corresponding extension field.
+- There are two parties $\mathcal{P}$ (the prover) and $\mathcal{V}$ the verifier.
+- The prover and the verifier agree on a computation.
+- The prover has some secret inputs to the computation and they want to convince the verifier that the computation running on the secret/private inputs evaluate to a certain value.
+
+Definition (base VOLE):
+upon calling the functionality VOLE(n), the prover $\mathcal{P}$ receives n pairs $(u,w)$ where $u$ is random and $w$ is a MAC, and the verifier receives one global key $\delta$ and n MACs noted $v$. Together the values distributed to the prover and verifier satisfy the equality
+$$v = u \cdot \delta + w$$
+
+
+Definition (VOLE commitment polynomial): let $x$ be a value in $\mathbb{F}_p$ known to $\mathcal{P}$. We generalize the VOLE from a linear commitment to a polynomial commitment:
+
+Definition: The prover $\mathcal{P}$ holds a polynomial $\rho_x(t) = \rho_0 +\rho_1 t + \cdots + \rho_d t^d$ where $\rho_d = x$ and $\rho_0, \cdots, \rho_{d-1} \in \mathbb{F}_{p^r}$ and the verifier holds a global key $\Delta$ and the evaluation $\gamma_x = \rho_x(\Delta)$.
+
+
+Suppose the circuit is made of add, addc, mul, mulc gates. Here is a method to associate a commitment polynomial to every gate, in a gate-by-gate fashion bottom-up.
+Assuming we already have polynomial commitments associated with the input wires of a given gate, we are going to describe how to derive the polynomial commitment associated with the output from the input polynomial commitments.
+For addition gates, use the max degree and shift every subpolynomial to the maximum degree. For the multiplication gate just multiply the two polynomials.
+Formally:
+\begin{itemize}
+\item addc: $\llbracket x+c \\rrbracket = \llbracket x \rrbracket_d + c$
+  \begin{itemize}
+  \item Prover: $\rho(t) = \rho_x(t) + c \cdot t^d$
+  \item Verifier: $\gamma = \gamma_x + c \cdot \Delta^d$
+  \end{itemize}
+\item add: $\llbracket x+y \\rrbracket = \llbracket x \rrbracket_{d_1} + \llbracket y \rrbracket_{d_2}$ with $d=max(d_1,d_2)$
+  \begin{itemize}
+  \item Prover: $\rho(t) = t^{d - d_1} \rho_x(t) + t^{d - d_2} \rho_y(t)$
+  \item Verifier: $\gamma = \Delta^{d - d_1} \gamma_x + \Delta^{d - d_2} \gamma_y$
+  \end{itemize}
+\item mulc: $\llbracket x * c \\rrbracket = \llbracket x \rrbracket_d * c$
+  \begin{itemize}
+  \item Prover: $\rho(t) = c * \rho_x(t)$
+  \item Verifier: $\gamma = c * \gamma_x$
+  \end{itemize}
+\item mul: $\llbracket x * y \\rrbracket = \llbracket x \rrbracket_{d_1} * \llbracket y \rrbracket_{d_2}$
+  \begin{itemize}
+  \item Prover: $\rho(t) = \rho_x(t) * \rho_y(t)$
+  \item Verifier: $\gamma = \gamma_x * \gamma_y$
+  \end{itemize}
+\end{itemize}
+
+
+
+
+The protocol has 2 main components the polynommial commitment and the batch verification, and the following should be implemented:
+- A type `CommitmentPolynomial`, the type should provide in its interface functions necessary to compute the commitment polynomial gate by gate. It should also have a function to extract the coefficients defining the polynomial $\rho$, so that the prover can send the coefficients to the verifier and load them after receival. It should also have an `evaluate_at_point()` function to evaluate the polynomial at a given point; it is useful for the verifier to evaluate at point $\Delta$ the global key.
+
+- A function `batch_verification()` that takes a vector containing several CommitmentPolynomial of different degrees and checking them as a batch.
+
+
+
+Details on **batch verification**:
+- assume there are $m$ commitment polynomials where the maximum degree for the polynomials is $d$.
+- invoke the VOLE functionality r * (d-1) times, and use $r$ VOLEs to compose one full field VOLE, that makes $d-1$ full field VOLEs. Let's call $\sigma_j$ the $j$-th full field VOLE, with $j \in [1; d-1]$.
+- use a challenge $\xi$ (from fiat-shamir) and consider its sequence of powers $\xi^i$
+- let's define a new polynomial $\pi(t)$ combining all the commitment polynomials $\rho_i$:
+  * for every commitment polynomial multiply each polynomial $\rho_i$ by  $\xi^i$ and make it a polynomial of degree $d$ by multiplying it by $t^{d-d_i}, we call them aligned at that stage.
+  * Sum all the aligned commitment polynomials
+  * Add to the sum the masks $t^{j-1}\sigma_j(t)$
+- Send the coefficients of $\pi(t)$ to the verifier
+- The verifier computes the same aligned and masked commitments using the verifier part of the commitment polynomial $\rho_i$.
+  If the aligned commitments are equal to $\pi(delta)$ then the protocol accepts otherwise it rejects.
+
+
+
+
+In order to provide the best implementation, do things in separate and sequential steps.
+First define the API with empty implementations, then progressively fill the implementation, and start writing simple unit tests for each component, fixing the tests or the implementation as you go.
+
+In particular the API for polynomial gate should be added to @edge/sieve-ir-api .
+The protocol implementation should be integrated to the @edge/schmivitz crate library. The fields are F2 for the base field and F128b for the large field.
+
+
+

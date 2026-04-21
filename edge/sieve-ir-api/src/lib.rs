@@ -66,10 +66,32 @@
 //! }
 //! ```
 //!
+//! ```
+//! use swanky_field_binary::F2;
+//! use swanky_sieve_ir_api::*;
+//!
+//! fn example3<B>(backend: &mut B) -> CircuitResult<()>
+//! where
+//!     B: PolyBackend<F2>,
+//! {
+//!     let v0 = backend.input_private()?;
+//!     let v1 = backend.mul(&v0, &v0)?;
+//!     let v2 = backend.add(&v1, &v1)?;
+//!
+//!     backend.assert_zero(&v2)?;
+//!
+//!     let inps = backend.inputs_private::<16>()?;
+//!     backend.poly_gate(&inps, |x: [F2; 16]| x[0] * x[1] * x[2] * x[3]);
+//!     Ok(())
+//! }
+//! ```
 
 #![deny(missing_docs)]
 
+pub mod commitment_polynomial;
+
 use std::fmt::Debug;
+use std::ops::{Add, Mul};
 use swanky_error::{ErrorKind, swanky_error};
 
 /// Error types for a SIEVE IR circuit.
@@ -127,4 +149,27 @@ pub trait FieldBackend<F> {
 pub trait CircuitExecuter<F> {
     /// The body of the circuit to execute, given a backend.
     fn execute<B: FieldBackend<F>>(&self, backend: &mut B) -> CircuitResult<()>;
+}
+
+/// Gello
+/* pub trait PolyBackend<F>: FieldBackend<F> {
+    /// Gello4
+    type Polynomial;
+
+    /// Gello2
+    fn poly_gate<const INPUT_LEN: usize>(
+        &mut self,
+        inputs: &[Self::Wire; INPUT_LEN],
+        f: impl Fn([Self::Polynomial; INPUT_LEN]) -> Self::Polynomial,
+    ) -> CircuitResult<Self::Wire>;
+} */
+
+/// Gello
+pub trait PolyBackend<F>: FieldBackend<F> {
+    /// Gello2
+    fn poly_gate<const INPUT_LEN: usize, T: Add + Mul>(
+        &mut self,
+        inputs: &[Self::Wire; INPUT_LEN],
+        f: impl Fn([T; INPUT_LEN]) -> T,
+    ) -> CircuitResult<Self::Wire>;
 }

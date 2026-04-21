@@ -19,6 +19,7 @@
 pub mod circuit;
 pub mod circuit_validator;
 pub mod parameters;
+pub mod polynomial_constraint;
 pub mod proof;
 pub mod vole;
 
