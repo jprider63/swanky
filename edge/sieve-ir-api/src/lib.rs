@@ -90,8 +90,9 @@
 
 pub mod commitment_polynomial;
 
+use std::array;
 use std::fmt::Debug;
-use std::ops::{Add, Mul};
+use std::ops::{Add, Mul, Sub};
 use swanky_error::{ErrorKind, swanky_error};
 
 /// Error types for a SIEVE IR circuit.
@@ -164,12 +165,42 @@ pub trait CircuitExecuter<F> {
     ) -> CircuitResult<Self::Wire>;
 } */
 
-/// Gello
-pub trait PolyBackend<F>: FieldBackend<F> {
-    /// Gello2
-    fn poly_gate<const INPUT_LEN: usize, T: Add + Mul>(
+/// A trait abstracting over backends that support higher degree constraints.
+pub trait HigherDegreeBackend<F>: FieldBackend<F> {
+    // TODO:
+    // type Polynomial;
+
+    /// Assert that a higher degree constraint equals 0.
+    fn assert_zero_higher_degree<const INPUT_LEN: usize, T: Add + Sub + Mul>(
         &mut self,
         inputs: &[Self::Wire; INPUT_LEN],
         f: impl Fn([T; INPUT_LEN]) -> T,
-    ) -> CircuitResult<Self::Wire>;
+    );
+
+    /// Helper function to return the wire value returned by a higher degree gate.
+    /// By default, this will witness a new private input and assert that it equals the output of
+    /// the higher degree constraint.
+    fn higher_degree_gate<const INPUT_LEN: usize, T: Add + Sub + Mul>(
+        &mut self,
+        inputs: &[Self::Wire; INPUT_LEN],
+        f: impl Fn([T; INPUT_LEN]) -> T,
+    ) -> CircuitResult<Self::Wire> {
+        // Witness a new witness value.
+        let output_wire = self.input_private()?;
+
+        // Append `output` to inputs.
+        let inputs: [Self::Wire; INPUT_LEN+1] = array::from_fn(|i|
+            if i < INPUT_LEN { inputs[i] } else { output_wire }
+        );
+
+        self.assert_zero_higher_degree(inputs, |inputs| {
+            let f_inputs: &[T; INPUT_LEN] = &inputs[0..INPUT_LEN];
+            let x = f(f_inputs);
+
+            let output = inputs[INPUT_LEN];
+            x - output
+        });
+
+        output_wire
+    }
 }
