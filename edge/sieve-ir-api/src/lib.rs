@@ -153,14 +153,14 @@ pub trait CircuitExecuter<F> {
 
 /// A trait abstracting over backends that support higher degree constraints.
 pub trait HigherDegreeBackend<F>: FieldBackend<F> {
-    // TODO:
-    // type Polynomial;
+    /// Backend's repesentation for higher degree wire values.
+    type HigherDegreeWire;
 
     /// Assert that a higher degree constraint equals 0.
-    fn assert_zero_higher_degree<const INPUT_LEN: usize, T: Add + Sub + Mul>(
+    fn assert_zero_higher_degree<const INPUT_LEN: usize>(
         &mut self,
         inputs: &[Self::Wire; INPUT_LEN],
-        f: impl Fn([T; INPUT_LEN]) -> T,
+        f: impl Fn([Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
     );
     /*
     /// Helper function to return the wire value returned by a higher degree gate.
