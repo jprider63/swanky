@@ -15,6 +15,7 @@ version.workspace = true
 [dev-dependencies]
 swanky-field-binary.workspace = true
 swanky-field-ff-primes.workspace = true
+rand.workspace = true
 
 [lints]
 workspace = true
