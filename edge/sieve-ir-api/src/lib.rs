@@ -72,7 +72,7 @@
 //!
 //! fn example3<B>(backend: &mut B) -> CircuitResult<()>
 //! where
-//!     B: PolyBackend<F2>,
+//!     B: HigherDegreeBackend<F2>,
 //! {
 //!     let v0 = backend.input_private()?;
 //!     let v1 = backend.mul(&v0, &v0)?;
@@ -81,7 +81,7 @@
 //!     backend.assert_zero(&v2)?;
 //!
 //!     let inps = backend.inputs_private::<16>()?;
-//!     backend.poly_gate(&inps, |x: [F2; 16]| x[0] * x[1] * x[2] * x[3]);
+//!     backend.assert_zero_higher_degree(&inps, |x: [F2; 16]| x[0] * x[1] * x[2] * x[3]);
 //!     Ok(())
 //! }
 //! ```
@@ -90,7 +90,6 @@
 
 pub mod commitment_polynomial;
 
-use std::array;
 use std::fmt::Debug;
 use std::ops::{Add, Mul, Sub};
 use swanky_error::{ErrorKind, swanky_error};
@@ -151,19 +150,6 @@ pub trait CircuitExecuter<F> {
     /// The body of the circuit to execute, given a backend.
     fn execute<B: FieldBackend<F>>(&self, backend: &mut B) -> CircuitResult<()>;
 }
-
-/// Gello
-/* pub trait PolyBackend<F>: FieldBackend<F> {
-    /// Gello4
-    type Polynomial;
-
-    /// Gello2
-    fn poly_gate<const INPUT_LEN: usize>(
-        &mut self,
-        inputs: &[Self::Wire; INPUT_LEN],
-        f: impl Fn([Self::Polynomial; INPUT_LEN]) -> Self::Polynomial,
-    ) -> CircuitResult<Self::Wire>;
-} */
 
 /// A trait abstracting over backends that support higher degree constraints.
 pub trait HigherDegreeBackend<F>: FieldBackend<F> {
