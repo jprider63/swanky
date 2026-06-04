@@ -56,7 +56,7 @@ pub struct BatchProverResult {
 /// - Providing d-1 full-field VOLE correlations as masks.
 /// - Sending the resulting coefficients to the verifier.
 pub fn batch_prove(
-    commitments: &[CommitmentPolynomial<F128b>],
+    commitments: &[CommitmentPolynomial<F128b, F128b>],
     xi: F128b,
     mask_voles: &[FullFieldVole],
 ) -> Result<BatchProverResult> {
@@ -95,9 +95,11 @@ pub fn batch_prove(
     for commitment in commitments {
         let d_i = commitment.degree();
         let shift = max_degree - d_i;
-        for (k, coeff) in commitment.coefficients().iter().enumerate() {
+        for (k, coeff) in commitment.lower_coefficients().iter().enumerate() {
             pi_coeffs[k + shift] = pi_coeffs[k + shift] + xi_power * *coeff;
         }
+        pi_coeffs[d_i + shift] =
+            pi_coeffs[d_i + shift] + xi_power * commitment.highest_degree();
         xi_power *= xi;
     }
 
@@ -269,9 +271,9 @@ mod tests {
         rng: &mut impl Rng,
         delta: F128b,
         value: F128b,
-    ) -> (CommitmentPolynomial<F128b>, F128b) {
+    ) -> (CommitmentPolynomial<F128b, F128b>, F128b) {
         let w = random_f128b(rng);
-        let poly = CommitmentPolynomial::from_base_vole(value, w);
+        let poly = CommitmentPolynomial::<F128b, F128b>::from_base_vole(value, w);
         let gamma = poly.evaluate_at_point(delta);
         (poly, gamma)
     }
@@ -283,9 +285,10 @@ mod tests {
         let x = random_f128b(rng);
         let w = random_f128b(rng);
 
-        let poly = CommitmentPolynomial::from_base_vole(x, w);
+        let poly = CommitmentPolynomial::<F128b, F128b>::from_base_vole(x, w);
         assert_eq!(poly.degree(), 1);
-        assert_eq!(poly.coefficients(), &[w, x]);
+        assert_eq!(poly.lower_coefficients(), &[w]);
+        assert_eq!(poly.highest_degree(), x);
         assert_eq!(poly.evaluate_at_point(delta), w + x * delta);
     }
 
@@ -297,7 +300,7 @@ mod tests {
         let c = random_f128b(rng);
         let w = random_f128b(rng);
 
-        let poly_x = CommitmentPolynomial::from_base_vole(x, w);
+        let poly_x = CommitmentPolynomial::<F128b, F128b>::from_base_vole(x, w);
         let gamma_x = poly_x.evaluate_at_point(delta);
 
         let poly_sum = poly_x.addc(c);

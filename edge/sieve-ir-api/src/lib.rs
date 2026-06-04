@@ -176,7 +176,7 @@ pub trait HigherDegreeBackend<F>: FieldBackend<F> {
         inputs: &[Self::Wire; INPUT_LEN],
         f: impl Fn([T; INPUT_LEN]) -> T,
     );
-
+    /*
     /// Helper function to return the wire value returned by a higher degree gate.
     /// By default, this will witness a new private input and assert that it equals the output of
     /// the higher degree constraint.
@@ -202,5 +202,5 @@ pub trait HigherDegreeBackend<F>: FieldBackend<F> {
         });
 
         output_wire
-    }
+    }*/
 }
