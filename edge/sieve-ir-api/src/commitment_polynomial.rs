@@ -171,7 +171,7 @@ mod tests {
     use super::*;
     use rand::thread_rng;
     use swanky_field::FiniteRing;
-    use swanky_field_binary::{F2, F128b};
+    use swanky_field_binary::{F2, F8b, F128b};
 
     fn pow_fe<FE: FiniteField>(base: FE, exp: usize) -> FE {
         let mut result = FE::ONE;
@@ -179,6 +179,24 @@ mod tests {
             result = result * base;
         }
         result
+    }
+
+    /// Reference polynomial evaluation independent of `evaluate_at_point`'s Horner
+    /// implementation: cross-checks correctness by recomputing the sum directly.
+    fn eval_reference<F: FiniteField, FE: FiniteField>(
+        poly: &CommitmentPolynomial<F, FE>,
+        point: FE,
+    ) -> FE
+    where
+        F: IsSubFieldOf<FE>,
+    {
+        let mut acc = FE::ZERO;
+        let mut p = FE::ONE;
+        for c in poly.lower_coefficients() {
+            acc = acc + *c * p;
+            p = p * point;
+        }
+        acc + Into::<FE>::into(poly.highest_degree()) * p
     }
 
     #[test]
@@ -389,5 +407,71 @@ mod tests {
         assert_eq!(shifted.degree(), poly.degree());
         assert_eq!(shifted.highest_degree(), poly.highest_degree());
         assert_eq!(shifted.lower_coefficients(), poly.lower_coefficients());
+    }
+
+    #[test]
+    fn from_parts_degree_zero() {
+        let mut rng = thread_rng();
+        let x = F128b::random(&mut rng);
+        let point = F128b::random(&mut rng);
+        let poly: CommitmentPolynomial<F128b, F128b> =
+            CommitmentPolynomial::from_parts(vec![], x);
+        assert_eq!(poly.degree(), 0);
+        assert!(poly.lower_coefficients().is_empty());
+        // A degree-0 polynomial evaluates to its (constant) committed value everywhere.
+        assert_eq!(poly.evaluate_at_point(point), x);
+    }
+
+    #[test]
+    fn evaluate_matches_reference() {
+        let mut rng = thread_rng();
+        let point = F128b::random(&mut rng);
+        let poly = CommitmentPolynomial::<F128b, F128b>::from_parts(
+            vec![
+                F128b::random(&mut rng),
+                F128b::random(&mut rng),
+                F128b::random(&mut rng),
+            ],
+            F128b::random(&mut rng),
+        );
+        assert_eq!(poly.evaluate_at_point(point), eval_reference(&poly, point));
+    }
+
+    #[test]
+    fn mul_with_constant_polynomial() {
+        let mut rng = thread_rng();
+        let point = F128b::random(&mut rng);
+        let p = CommitmentPolynomial::<F128b, F128b>::from_base_vole(
+            F128b::random(&mut rng),
+            F128b::random(&mut rng),
+        );
+        let constant: CommitmentPolynomial<F128b, F128b> =
+            CommitmentPolynomial::from_parts(vec![], F128b::random(&mut rng));
+
+        let prod = p.mul(&constant);
+        assert_eq!(prod.degree(), p.degree());
+        assert_eq!(
+            prod.evaluate_at_point(point),
+            p.evaluate_at_point(point) * constant.evaluate_at_point(point),
+        );
+    }
+
+    #[test]
+    fn mul_f8b_in_f128b_subfield() {
+        // Exercise a non-trivial, non-prime subfield: F8b ⊂ F128b.
+        let mut rng = thread_rng();
+        let point = F128b::random(&mut rng);
+
+        let x = F8b::random(&mut rng);
+        let y = F8b::random(&mut rng);
+        let p = CommitmentPolynomial::<F8b, F128b>::from_base_vole(x, F128b::random(&mut rng));
+        let q = CommitmentPolynomial::<F8b, F128b>::from_base_vole(y, F128b::random(&mut rng));
+
+        let prod = p.mul(&q);
+        assert_eq!(prod.highest_degree(), x * y);
+        assert_eq!(
+            prod.evaluate_at_point(point),
+            p.evaluate_at_point(point) * q.evaluate_at_point(point),
+        );
     }
 }
