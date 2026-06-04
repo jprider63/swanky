@@ -9,7 +9,7 @@
 use swanky_error::{ErrorKind, Result, bail};
 use swanky_field::FiniteRing;
 use swanky_field_binary::F128b;
-use swanky_sieve_ir_api::commitment_polynomial::CommitmentPolynomial;
+use crate::commitment_polynomial::CommitmentPolynomial;
 
 /// Full-field VOLE correlation in F128b.
 ///

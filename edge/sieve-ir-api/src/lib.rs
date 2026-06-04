@@ -88,8 +88,6 @@
 
 #![deny(missing_docs)]
 
-pub mod commitment_polynomial;
-
 use std::fmt::Debug;
 use std::ops::{Add, Mul, Sub};
 use swanky_error::{ErrorKind, swanky_error};

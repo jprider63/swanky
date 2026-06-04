@@ -13,7 +13,6 @@ publish.workspace = true
 version.workspace = true
 
 [dev-dependencies]
-rand.workspace = true
 swanky-field-binary.workspace = true
 swanky-field-ff-primes.workspace = true
 
@@ -22,4 +21,3 @@ workspace = true
 
 [dependencies]
 swanky-error.workspace = true
-swanky-field.workspace = true
