@@ -19,7 +19,6 @@ use swanky_sieve_ir_api::{CircuitExecuter, HigherDegreeCircuitExecuter};
 
 use crate::{circuit::Circuit, vole::DecommitmentSerde};
 use crate::{
-    commitment_polynomial::CommitmentPolynomial,
     parameters::{REPETITION_PARAM, SECURITY_PARAM, VOLE_SIZE_PARAM},
     proof::{
         prover_preparer::ProverPreparer, prover_traverser::ProverTraverser,
@@ -125,8 +124,8 @@ where
         // Batching higher degree constraints of maximum degree d requires d - 1 full-field mask
         // VOLEs (sigma_j in Fig. 3 of the better-conversions paper), each composed from
         // `MASK_VOLE_SIZE` base VOLEs. These are provisioned after the witness VOLEs.
-        let mask_vole_count =
-            circuit_preparer.max_higher_degree().saturating_sub(1) * MASK_VOLE_SIZE;
+        let max_higher_degree = circuit_preparer.max_higher_degree();
+        let mask_vole_count = max_higher_degree.saturating_sub(1) * MASK_VOLE_SIZE;
 
         let (witness, _challenge_count) = circuit_preparer.into_parts();
         log::info!("1: circuit preparer: {:?}", t.elapsed());
@@ -167,7 +166,8 @@ where
         // Traverse circuit to compute the coefficients for the degree 0 and 1 terms for each
         // gate / polynomial (`A_i0` and `A_i1` in the paper) and start to aggregate these with
         // the challenges.
-        let mut circuit_traverser = ProverTraverser::new(witness, chi_challenge, voles)?;
+        let mut circuit_traverser =
+            ProverTraverser::new(witness, chi_challenge, voles, max_higher_degree)?;
         circuit.execute(&mut circuit_traverser)?;
         let (
             degree_0_aggregation,
@@ -378,18 +378,21 @@ where
 /// `MASK_VOLE_SIZE` base VOLE correlations starting at index `witness_len + (j - 1) *
 /// MASK_VOLE_SIZE`.
 ///
-/// Returns the $`d`$ coefficients $`[\pi_0, ..., \pi_{d-1}]`$. The degree-$`d`$ coefficient of
-/// the aggregate is the (zero) committed value and is omitted, so $`\pi(t)`$ has degree at most
-/// $`d - 1`$. The result is empty if there were no higher degree constraints.
+/// The `aggregate` contains the $`d + 1`$ coefficients of the degree-$`d`$ aggregated constraint
+/// polynomial in increasing degree order. Its degree-$`d`$ coefficient is the challenge-weighted
+/// sum of the committed constraint values, which is zero for an honest prover and omitted, so
+/// $`\pi(t)`$ has degree at most $`d - 1`$ and is returned as the $`d`$ coefficients
+/// $`[\pi_0, ..., \pi_{d-1}]`$. The result is empty if there were no higher degree constraints.
 fn mask_higher_degree_aggregate<VoleP: RandomVoleP>(
-    aggregate: &CommitmentPolynomial<F2, F128b>,
+    aggregate: &[F128b],
     voles: &VoleP,
     witness_len: usize,
 ) -> Result<Vec<F128b>> {
-    debug_assert_eq!(aggregate.highest_degree(), F2::ZERO);
-    let mut pi = aggregate.lower_coefficients().to_vec();
+    debug_assert_eq!(aggregate.last().copied().unwrap_or(F128b::ZERO), F128b::ZERO);
+    let degree = aggregate.len().saturating_sub(1);
+    let mut pi = aggregate[..degree].to_vec();
 
-    for j in 0..aggregate.degree().saturating_sub(1) {
+    for j in 0..degree.saturating_sub(1) {
         // Compose the mask sigma_j(t) = w_j + s_j * t from base VOLE correlations, the same way
         // the degree 0 and 1 commitment masks are composed in `prove()`.
         let base = witness_len + j * MASK_VOLE_SIZE;
