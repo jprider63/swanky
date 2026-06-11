@@ -2,8 +2,9 @@ use mac_n_cheese_sieve_parser::WireId;
 use swanky_error::{ErrorKind, Result, bail, swanky_error};
 use swanky_field::FiniteRing;
 use swanky_field_binary::{F2, F128b};
-use swanky_sieve_ir_api::{CircuitResult, FieldBackend};
+use swanky_sieve_ir_api::{CircuitResult, FieldBackend, HigherDegreeBackend};
 
+use crate::commitment_polynomial::CommitmentPolynomial;
 use crate::proof::ChiGenerator;
 use crate::vole::RandomVoleP;
 
@@ -38,6 +39,13 @@ pub(crate) struct ProverTraverser<Vole> {
     /// Partial aggregation of the assert zero check.
     /// TODO: Add this to the specification and reference it.
     aggregate_assert_zero: F128b,
+
+    /// Commitment polynomials collected from higher degree constraints during traversal.
+    ///
+    /// Unlike the degree-2 aggregates above, these are batched after traversal with their own
+    /// challenge (see [`crate::polynomial_constraint::batch_prove`]), so they don't consume chi
+    /// challenges or fresh VOLEs.
+    higher_degree_constraints: Vec<CommitmentPolynomial<F2, F128b>>,
 }
 
 impl<Vole: RandomVoleP> ProverTraverser<Vole> {
@@ -68,6 +76,8 @@ impl<Vole: RandomVoleP> ProverTraverser<Vole> {
             aggregate_degree_1: F128b::ZERO,
 
             aggregate_assert_zero: F128b::ZERO,
+
+            higher_degree_constraints: Vec::new(),
         })
     }
 
@@ -131,6 +141,15 @@ impl<Vole: RandomVoleP> ProverTraverser<Vole> {
             })
             .copied()
     }
+
+    /// Get the commitment polynomials collected from higher degree constraints during traversal.
+    ///
+    /// These should be batched and proven with
+    /// [`crate::polynomial_constraint::batch_prove`] after traversal.
+    #[allow(dead_code)] // TODO: Remove once higher degree constraints are wired into the proof.
+    pub(crate) fn higher_degree_constraints(&self) -> &[CommitmentPolynomial<F2, F128b>] {
+        &self.higher_degree_constraints
+    }
 }
 
 // TODO: Generalize this for large primes.
@@ -190,5 +209,127 @@ impl<VOLE: RandomVoleP> FieldBackend<F2> for ProverTraverser<VOLE> {
         self.aggregate_assert_zero += challenge * wire.1;
 
         Ok(())
+    }
+}
+
+impl<VOLE: RandomVoleP> HigherDegreeBackend<F2, F128b> for ProverTraverser<VOLE> {
+    type HigherDegreeWire = CommitmentPolynomial<F2, F128b>;
+
+    fn h_add(
+        lhs: &Self::HigherDegreeWire,
+        rhs: &Self::HigherDegreeWire,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
+        Ok(lhs.add(rhs))
+    }
+
+    fn h_addc(lhs: &Self::HigherDegreeWire, rhs: F2) -> CircuitResult<Self::HigherDegreeWire> {
+        Ok(lhs.addc(rhs))
+    }
+
+    fn h_mul(
+        lhs: &Self::HigherDegreeWire,
+        rhs: &Self::HigherDegreeWire,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
+        Ok(lhs.mul(rhs))
+    }
+
+    fn h_mulc(lhs: &Self::HigherDegreeWire, rhs: F2) -> CircuitResult<Self::HigherDegreeWire> {
+        Ok(lhs.mulc(rhs))
+    }
+
+    fn assert_zero_higher_degree<const INPUT_LEN: usize>(
+        &mut self,
+        inputs: &[Self::Wire; INPUT_LEN],
+        f: impl Fn([Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
+    ) {
+        // Lift each input wire (value, VOLE mask) into its degree-1 commitment polynomial
+        // ρ(t) = w + x·t and evaluate the constraint over the polynomials.
+        let constraint = f(std::array::from_fn(|i| {
+            CommitmentPolynomial::from_base_vole(inputs[i].0, inputs[i].1)
+        }));
+
+        // The highest-degree coefficient is the constraint evaluated on the witness values, so an
+        // honest prover always commits to zero here.
+        debug_assert_eq!(constraint.highest_degree(), F2::ZERO);
+
+        self.higher_degree_constraints.push(constraint);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use merlin::Transcript;
+    use rand::thread_rng;
+
+    use crate::vole::insecure::InsecureVole;
+
+    type Traverser = ProverTraverser<InsecureVole>;
+
+    fn test_traverser() -> Traverser {
+        let rng = &mut thread_rng();
+        let transcript = &mut Transcript::new(b"higher degree tests");
+        let secret: Vec<F2> = Vec::new();
+        let (voles, _challenge) = InsecureVole::create(0, transcript, &secret, rng);
+
+        ProverTraverser::new(Vec::new(), ChiGenerator::new(F128b::random(rng)), voles).unwrap()
+    }
+
+    /// The collected constraint polynomial must commit to zero and be consistent with the
+    /// verifier's view: evaluating it at any point Δ must match the constraint computed
+    /// homomorphically over the wire tags q_i = w_i + x_i·Δ.
+    #[test]
+    fn higher_degree_constraints_match_homomorphic_evaluation() {
+        let rng = &mut thread_rng();
+        let mut traverser = test_traverser();
+
+        // Witness satisfying x0 * x1 * x2 * x3 == 0.
+        let product_values = [F2::ONE, F2::ONE, F2::ZERO, F2::ONE];
+        let product_wires: [(F2, F128b); 4] =
+            std::array::from_fn(|i| (product_values[i], F128b::random(rng)));
+        traverser.assert_zero_higher_degree(&product_wires, |x| {
+            let x01 = Traverser::h_mul(&x[0], &x[1]).unwrap();
+            let x23 = Traverser::h_mul(&x[2], &x[3]).unwrap();
+            Traverser::h_mul(&x01, &x23).unwrap()
+        });
+
+        // Witness satisfying x0 * x1 + x2 * x3 == 0.
+        let sum_values = [F2::ONE; 4];
+        let sum_wires: [(F2, F128b); 4] =
+            std::array::from_fn(|i| (sum_values[i], F128b::random(rng)));
+        traverser.assert_zero_higher_degree(&sum_wires, |x| {
+            let x01 = Traverser::h_mul(&x[0], &x[1]).unwrap();
+            let x23 = Traverser::h_mul(&x[2], &x[3]).unwrap();
+            Traverser::h_add(&x01, &x23).unwrap()
+        });
+
+        let constraints = traverser.higher_degree_constraints();
+        assert_eq!(constraints.len(), 2);
+        assert_eq!(constraints[0].degree(), 4);
+        assert_eq!(constraints[1].degree(), 2);
+
+        let delta = F128b::random(rng);
+        let tag = |(x, w): (F2, F128b)| w + x * delta;
+
+        let expected_product = product_wires.map(tag).iter().fold(F128b::ONE, |a, q| a * q);
+        assert_eq!(constraints[0].highest_degree(), F2::ZERO);
+        assert_eq!(constraints[0].evaluate_at_point(delta), expected_product);
+
+        let sum_tags = sum_wires.map(tag);
+        let expected_sum = sum_tags[0] * sum_tags[1] + sum_tags[2] * sum_tags[3];
+        assert_eq!(constraints[1].highest_degree(), F2::ZERO);
+        assert_eq!(constraints[1].evaluate_at_point(delta), expected_sum);
+    }
+
+    /// Constant operations apply the constant to the committed value.
+    #[test]
+    fn constant_operations_apply_to_the_committed_value() {
+        let rng = &mut thread_rng();
+        let poly = CommitmentPolynomial::from_base_vole(F2::ONE, F128b::random(rng));
+
+        let sum = Traverser::h_addc(&poly, F2::ONE).unwrap();
+        assert_eq!(sum.highest_degree(), F2::ZERO);
+        let scaled = Traverser::h_mulc(&poly, F2::ZERO).unwrap();
+        assert_eq!(scaled.highest_degree(), F2::ZERO);
     }
 }

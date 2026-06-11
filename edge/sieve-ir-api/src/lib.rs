@@ -67,12 +67,12 @@
 //! ```
 //!
 //! ```
-//! use swanky_field_binary::F2;
+//! use swanky_field_binary::{F2, F128b};
 //! use swanky_sieve_ir_api::*;
 //!
 //! fn example3<B>(backend: &mut B) -> CircuitResult<()>
 //! where
-//!     B: HigherDegreeBackend<F2>,
+//!     B: HigherDegreeBackend<F2, F128b>,
 //! {
 //!     let v0 = backend.input_private()?;
 //!     let v1 = backend.mul(&v0, &v0)?;
@@ -81,7 +81,11 @@
 //!     backend.assert_zero(&v2)?;
 //!
 //!     let inps = backend.inputs_private::<16>()?;
-//!     backend.assert_zero_higher_degree(&inps, |x: [F2; 16]| x[0] * x[1] * x[2] * x[3]);
+//!     backend.assert_zero_higher_degree(&inps, |x| {
+//!         let x01 = B::h_mul(&x[0], &x[1]).unwrap();
+//!         let x23 = B::h_mul(&x[2], &x[3]).unwrap();
+//!         B::h_mul(&x01, &x23).unwrap()
+//!     });
 //!     Ok(())
 //! }
 //! ```
@@ -154,16 +158,19 @@ pub trait HigherDegreeBackend<F, FE>: FieldBackend<F> {
     type HigherDegreeWire;
 
     /// Field addition.
-    fn h_add(lhs: &Self::HigherDegreeWire, rhs: &Self::HigherDegreeWire) -> CircuitResult<Self::Wire>;
+    fn h_add(
+        lhs: &Self::HigherDegreeWire,
+        rhs: &Self::HigherDegreeWire,
+    ) -> CircuitResult<Self::HigherDegreeWire>;
 
     /// Field addition with a constant.
-    fn h_addc(lhs: &Self::HigherDegreeWire, rhs: FE) -> CircuitResult<Self::HigherDegreeWire>;
+    fn h_addc(lhs: &Self::HigherDegreeWire, rhs: F) -> CircuitResult<Self::HigherDegreeWire>;
 
     /// Field multiplication.
     fn h_mul(lhs: &Self::HigherDegreeWire, rhs: &Self::HigherDegreeWire) -> CircuitResult<Self::HigherDegreeWire>;
 
     /// Field multiplication with a constant.
-    fn h_mulc(lhs: &Self::HigherDegreeWire, rhs: FE) -> CircuitResult<Self::HigherDegreeWire>;
+    fn h_mulc(lhs: &Self::HigherDegreeWire, rhs: F) -> CircuitResult<Self::HigherDegreeWire>;
 
     /// Assert that a higher degree constraint equals 0.
     fn assert_zero_higher_degree<const INPUT_LEN: usize>(
