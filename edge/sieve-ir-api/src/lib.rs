@@ -89,7 +89,6 @@
 #![deny(missing_docs)]
 
 use std::fmt::Debug;
-use std::ops::{Add, Mul, Sub};
 use swanky_error::{ErrorKind, swanky_error};
 
 /// Error types for a SIEVE IR circuit.
@@ -150,9 +149,21 @@ pub trait CircuitExecuter<F> {
 }
 
 /// A trait abstracting over backends that support higher degree constraints.
-pub trait HigherDegreeBackend<F>: FieldBackend<F> {
+pub trait HigherDegreeBackend<F, FE>: FieldBackend<F> {
     /// Backend's repesentation for higher degree wire values.
     type HigherDegreeWire;
+
+    /// Field addition.
+    fn h_add(lhs: &Self::HigherDegreeWire, rhs: &Self::HigherDegreeWire) -> CircuitResult<Self::Wire>;
+
+    /// Field addition with a constant.
+    fn h_addc(lhs: &Self::HigherDegreeWire, rhs: FE) -> CircuitResult<Self::HigherDegreeWire>;
+
+    /// Field multiplication.
+    fn h_mul(lhs: &Self::HigherDegreeWire, rhs: &Self::HigherDegreeWire) -> CircuitResult<Self::HigherDegreeWire>;
+
+    /// Field multiplication with a constant.
+    fn h_mulc(lhs: &Self::HigherDegreeWire, rhs: FE) -> CircuitResult<Self::HigherDegreeWire>;
 
     /// Assert that a higher degree constraint equals 0.
     fn assert_zero_higher_degree<const INPUT_LEN: usize>(
