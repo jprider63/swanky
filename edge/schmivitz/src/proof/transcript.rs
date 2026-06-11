@@ -89,6 +89,17 @@ impl Transcript<'_> {
         );
     }
 
+    /// Adds the masked higher degree constraint polynomial ($`\pi(t)`$ in the better-conversions
+    /// paper, Fig. 3) to the transcript.
+    pub(crate) fn append_higher_degree_commitment(&mut self, coefficients: &[F128b]) {
+        let bytes = coefficients
+            .iter()
+            .flat_map(|coefficient| coefficient.to_bytes())
+            .collect::<Vec<_>>();
+        self.0
+            .append_message(b"pi: higher degree commitment", bytes.as_slice());
+    }
+
     pub(crate) fn extract_decommitment_challenge(&mut self) -> [u8; SECURITY_PARAM / 8] {
         let mut challenge = [0u8; SECURITY_PARAM / 8];
         self.0

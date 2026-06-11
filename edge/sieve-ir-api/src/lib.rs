@@ -152,6 +152,34 @@ pub trait CircuitExecuter<F> {
     fn execute<B: FieldBackend<F>>(&self, backend: &mut B) -> CircuitResult<()>;
 }
 
+/// `HigherDegreeCircuitExecuter` abstracts over backends to execute a circuit that may contain
+/// higher degree constraints over a single field type.
+///
+/// This is the [`CircuitExecuter`] equivalent for [`HigherDegreeBackend`]s.
+pub trait HigherDegreeCircuitExecuter<F, FE> {
+    /// The body of the circuit to execute, given a backend.
+    fn execute<B: HigherDegreeBackend<F, FE>>(&self, backend: &mut B) -> CircuitResult<()>;
+}
+
+/// Implements [`HigherDegreeCircuitExecuter`] for a circuit that already implements
+/// [`CircuitExecuter`] by only exercising the [`FieldBackend`] gates.
+///
+/// (A blanket implementation would prevent circuits from implementing
+/// [`HigherDegreeCircuitExecuter`] directly, due to trait coherence.)
+#[macro_export]
+macro_rules! delegate_higher_degree_executer {
+    ($f:ty, $fe:ty, $circuit:ty) => {
+        impl $crate::HigherDegreeCircuitExecuter<$f, $fe> for $circuit {
+            fn execute<B: $crate::HigherDegreeBackend<$f, $fe>>(
+                &self,
+                backend: &mut B,
+            ) -> $crate::CircuitResult<()> {
+                <Self as $crate::CircuitExecuter<$f>>::execute(self, backend)
+            }
+        }
+    };
+}
+
 /// A trait abstracting over backends that support higher degree constraints.
 pub trait HigherDegreeBackend<F, FE>: FieldBackend<F> {
     /// Backend's repesentation for higher degree wire values.

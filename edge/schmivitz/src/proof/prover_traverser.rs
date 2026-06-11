@@ -40,12 +40,15 @@ pub(crate) struct ProverTraverser<Vole> {
     /// TODO: Add this to the specification and reference it.
     aggregate_assert_zero: F128b,
 
-    /// Commitment polynomials collected from higher degree constraints during traversal.
+    /// Aggregation of the higher degree constraint polynomials, batched with chi challenges.
     ///
-    /// Unlike the degree-2 aggregates above, these are batched after traversal with their own
-    /// challenge (see [`crate::polynomial_constraint::batch_prove`]), so they don't consume chi
-    /// challenges or fresh VOLEs.
-    higher_degree_constraints: Vec<CommitmentPolynomial<F2, F128b>>,
+    /// After traversal, this holds $$`\sum_{i \in [m]} \chi_i \cdot t^{d - d_i} \cdot \rho_i(t)`$$
+    /// where $`\rho_i(t)`$ is the commitment polynomial of the $`i`$th higher degree constraint,
+    /// $`d_i`$ is its degree, and $`d`$ is the maximum degree among them. This is the left-hand
+    /// term of the $`\pi(t)`$ polynomial from the batch verification protocol (Fig. 3 in the
+    /// better-conversions paper); the masking term is added in
+    /// [`Proof::prove()`](crate::proof::Proof::prove).
+    higher_degree_aggregate: CommitmentPolynomial<F2, F128b>,
 }
 
 impl<Vole: RandomVoleP> ProverTraverser<Vole> {
@@ -77,7 +80,8 @@ impl<Vole: RandomVoleP> ProverTraverser<Vole> {
 
             aggregate_assert_zero: F128b::ZERO,
 
-            higher_degree_constraints: Vec::new(),
+            // The additive identity: a degree-0 polynomial committing to zero.
+            higher_degree_aggregate: CommitmentPolynomial::from_parts(Vec::new(), F2::ZERO),
         })
     }
 
@@ -104,13 +108,19 @@ impl<Vole: RandomVoleP> ProverTraverser<Vole> {
     ///
     /// The components that were passed to [`Self::new()`] are returned unchanged.
     ///
-    /// This will fail if there were unused challenges or VOLEs.
-    pub(crate) fn into_parts(self) -> Result<(F128b, F128b, F128b, Vole)> {
-        if self.vole_assignment_count != self.voles.extended_witness_length() {
+    /// This will fail if there are witness values without a corresponding VOLE. Note that the
+    /// VOLEs may contain more correlations than the witness requires; the trailing ones are
+    /// reserved for masking the higher degree aggregate (see
+    /// [`Proof::prove()`](crate::proof::Proof::prove)).
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn into_parts(
+        self,
+    ) -> Result<(F128b, F128b, F128b, CommitmentPolynomial<F2, F128b>, Vole)> {
+        if self.vole_assignment_count != self.extended_witness.len() {
             bail!(
                 ErrorKind::OtherError,
-                "Traversal contained more VOLEs than it needed! Had {}, used {}",
-                self.voles.extended_witness_length(),
+                "Traversal did not use exactly one VOLE per extended witness value! Had {}, used {}",
+                self.extended_witness.len(),
                 self.vole_assignment_count
             );
         }
@@ -118,6 +128,7 @@ impl<Vole: RandomVoleP> ProverTraverser<Vole> {
             self.aggregate_degree_0,
             self.aggregate_degree_1,
             self.aggregate_assert_zero,
+            self.higher_degree_aggregate,
             self.voles,
         ))
     }
@@ -140,15 +151,6 @@ impl<Vole: RandomVoleP> ProverTraverser<Vole> {
                 )
             })
             .copied()
-    }
-
-    /// Get the commitment polynomials collected from higher degree constraints during traversal.
-    ///
-    /// These should be batched and proven with
-    /// [`crate::polynomial_constraint::batch_prove`] after traversal.
-    #[allow(dead_code)] // TODO: Remove once higher degree constraints are wired into the proof.
-    pub(crate) fn higher_degree_constraints(&self) -> &[CommitmentPolynomial<F2, F128b>] {
-        &self.higher_degree_constraints
     }
 }
 
@@ -252,7 +254,21 @@ impl<VOLE: RandomVoleP> HigherDegreeBackend<F2, F128b> for ProverTraverser<VOLE>
         // honest prover always commits to zero here.
         debug_assert_eq!(constraint.highest_degree(), F2::ZERO);
 
-        self.higher_degree_constraints.push(constraint);
+        // Scale the constraint by its challenge. Since the committed (highest-degree) coefficient
+        // is zero, scaling the mask coefficients alone matches `challenge * constraint`.
+        let challenge = self.chi_challenge.next();
+        let scaled = CommitmentPolynomial::from_parts(
+            constraint
+                .lower_coefficients()
+                .iter()
+                .map(|coefficient| challenge * *coefficient)
+                .collect(),
+            constraint.highest_degree(),
+        );
+
+        // `CommitmentPolynomial::add` aligns the lower-degree side by a power of t, so summing
+        // constraints one at a time builds exactly sum_i chi_i * t^(d - d_i) * rho_i(t).
+        self.higher_degree_aggregate = self.higher_degree_aggregate.add(&scaled);
     }
 }
 
@@ -266,24 +282,25 @@ mod tests {
 
     type Traverser = ProverTraverser<InsecureVole>;
 
-    fn test_traverser() -> Traverser {
+    fn test_traverser(chi: F128b) -> Traverser {
         let rng = &mut thread_rng();
         let transcript = &mut Transcript::new(b"higher degree tests");
         let secret: Vec<F2> = Vec::new();
         let (voles, _challenge) = InsecureVole::create(0, transcript, &secret, rng);
 
-        ProverTraverser::new(Vec::new(), ChiGenerator::new(F128b::random(rng)), voles).unwrap()
+        ProverTraverser::new(Vec::new(), ChiGenerator::new(chi), voles).unwrap()
     }
 
-    /// The collected constraint polynomial must commit to zero and be consistent with the
-    /// verifier's view: evaluating it at any point Δ must match the constraint computed
-    /// homomorphically over the wire tags q_i = w_i + x_i·Δ.
+    /// The aggregate must commit to zero and be consistent with the verifier's view: evaluating
+    /// it at any point Δ must match the challenge-weighted, degree-aligned sum of the constraints
+    /// computed homomorphically over the wire tags q_i = w_i + x_i·Δ.
     #[test]
-    fn higher_degree_constraints_match_homomorphic_evaluation() {
+    fn higher_degree_aggregate_matches_homomorphic_evaluation() {
         let rng = &mut thread_rng();
-        let mut traverser = test_traverser();
+        let chi = F128b::random(rng);
+        let mut traverser = test_traverser(chi);
 
-        // Witness satisfying x0 * x1 * x2 * x3 == 0.
+        // Witness satisfying x0 * x1 * x2 * x3 == 0, a degree-4 constraint.
         let product_values = [F2::ONE, F2::ONE, F2::ZERO, F2::ONE];
         let product_wires: [(F2, F128b); 4] =
             std::array::from_fn(|i| (product_values[i], F128b::random(rng)));
@@ -293,7 +310,7 @@ mod tests {
             Traverser::h_mul(&x01, &x23).unwrap()
         });
 
-        // Witness satisfying x0 * x1 + x2 * x3 == 0.
+        // Witness satisfying x0 * x1 + x2 * x3 == 0, a degree-2 constraint.
         let sum_values = [F2::ONE; 4];
         let sum_wires: [(F2, F128b); 4] =
             std::array::from_fn(|i| (sum_values[i], F128b::random(rng)));
@@ -303,22 +320,23 @@ mod tests {
             Traverser::h_add(&x01, &x23).unwrap()
         });
 
-        let constraints = traverser.higher_degree_constraints();
-        assert_eq!(constraints.len(), 2);
-        assert_eq!(constraints[0].degree(), 4);
-        assert_eq!(constraints[1].degree(), 2);
+        let (_, _, _, aggregate, _) = traverser.into_parts().unwrap();
 
+        // The aggregate is aligned to the maximum constraint degree and still commits to zero.
+        assert_eq!(aggregate.degree(), 4);
+        assert_eq!(aggregate.highest_degree(), F2::ZERO);
+
+        // Evaluate at a random Δ and compare against the verifier's computation
+        // sum_i chi_i * Δ^(d - d_i) * γ_i, with γ_i derived from the tags q_i = w_i + x_i·Δ.
         let delta = F128b::random(rng);
         let tag = |(x, w): (F2, F128b)| w + x * delta;
 
-        let expected_product = product_wires.map(tag).iter().fold(F128b::ONE, |a, q| a * q);
-        assert_eq!(constraints[0].highest_degree(), F2::ZERO);
-        assert_eq!(constraints[0].evaluate_at_point(delta), expected_product);
-
+        let gamma_product = product_wires.map(tag).iter().fold(F128b::ONE, |a, q| a * q);
         let sum_tags = sum_wires.map(tag);
-        let expected_sum = sum_tags[0] * sum_tags[1] + sum_tags[2] * sum_tags[3];
-        assert_eq!(constraints[1].highest_degree(), F2::ZERO);
-        assert_eq!(constraints[1].evaluate_at_point(delta), expected_sum);
+        let gamma_sum = sum_tags[0] * sum_tags[1] + sum_tags[2] * sum_tags[3];
+
+        let expected = chi * gamma_product + chi * chi * delta * delta * gamma_sum;
+        assert_eq!(aggregate.evaluate_at_point(delta), expected);
     }
 
     /// Constant operations apply the constant to the committed value.

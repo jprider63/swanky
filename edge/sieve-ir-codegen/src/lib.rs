@@ -157,6 +157,14 @@ fn codegen_impls<T: Read + Seek>(
                 self.main(backend)
             }
         }
+        // Parsed circuits never contain higher degree constraints, so executing them on a
+        // `HigherDegreeBackend` only exercises the `FieldBackend` gates.
+        // JP: Hard coding F2/F128b for now.
+        swanky_sieve_ir_api::delegate_higher_degree_executer!(
+            swanky_field_binary::F2,
+            swanky_field_binary::F128b,
+            #struct_name
+        );
     }
 }
 

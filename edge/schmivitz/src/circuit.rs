@@ -19,7 +19,7 @@ use std::{
 };
 use swanky_error::{ErrorKind, bail, swanky_error};
 use swanky_field::PrimeFiniteField;
-use swanky_field_binary::F2;
+use swanky_field_binary::{F2, F128b};
 use swanky_sieve_ir_api::{CircuitExecuter, CircuitResult, FieldBackend};
 use tempfile::tempdir;
 
@@ -394,6 +394,10 @@ impl<'a> CircuitExecuter<F2> for CircuitInterpreter<'a> {
         Ok(())
     }
 }
+
+// Parsed circuits never contain higher degree constraints, so executing them on a
+// `HigherDegreeBackend` only exercises the `FieldBackend` gates.
+swanky_sieve_ir_api::delegate_higher_degree_executer!(F2, F128b, CircuitInterpreter<'_>);
 
 /// Validate that the circuit can be processed by the system, according to the header info.
 ///
