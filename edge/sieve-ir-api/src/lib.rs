@@ -80,7 +80,7 @@
 //!
 //!     backend.assert_zero(&v2)?;
 //!
-//!     let inps = backend.inputs_private::<16>()?;
+//!     let inps = backend.inputs_private::<4>()?;
 //!     backend.assert_zero_higher_degree(&inps, |x| {
 //!         let x01 = B::h_mul(&x[0], &x[1]).unwrap();
 //!         let x23 = B::h_mul(&x[2], &x[3]).unwrap();

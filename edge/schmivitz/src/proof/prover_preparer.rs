@@ -1,7 +1,7 @@
 use mac_n_cheese_sieve_parser::WireId;
 use swanky_error::{ErrorKind, bail};
-use swanky_field_binary::F2;
-use swanky_sieve_ir_api::{CircuitResult, FieldBackend};
+use swanky_field_binary::{F2, F128b};
+use swanky_sieve_ir_api::{CircuitResult, FieldBackend, HigherDegreeBackend};
 
 /// A [`ProverPreparer`] allows the prover to prepare for VOLE-in-the-head by evaluating the
 /// circuit in the clear and determining the full extended witness.
@@ -29,6 +29,9 @@ pub(crate) struct ProverPreparer<'a> {
 
     /// Number of polynomials that will need challenges.
     challenge_count: usize,
+
+    /// Maximum degree among the higher degree constraint polynomials in the circuit.
+    max_higher_degree: usize,
 }
 
 impl<'a> ProverPreparer<'a> {
@@ -38,12 +41,19 @@ impl<'a> ProverPreparer<'a> {
             priv_input_pos: 0,
             witness: Vec::with_capacity(max_wire_id as usize),
             challenge_count: 0,
+            max_higher_degree: 0,
         })
     }
 
     #[cfg(test)]
     pub(crate) fn count(&self) -> usize {
         self.witness.len()
+    }
+
+    /// Get the maximum degree among the higher degree constraint polynomials seen during
+    /// traversal (0 if there were none).
+    pub(crate) fn max_higher_degree(&self) -> usize {
+        self.max_higher_degree
     }
 
     /// Get the witness and number of challenges required.
@@ -104,6 +114,51 @@ impl<'a> FieldBackend<F2> for ProverPreparer<'a> {
     }
 }
 
+impl<'a> HigherDegreeBackend<F2, F128b> for ProverPreparer<'a> {
+    /// The degree of the commitment polynomial that the
+    /// [`ProverTraverser`](crate::proof::prover_traverser::ProverTraverser) will build for the
+    /// wire.
+    ///
+    /// The degree rules mirror [`crate::commitment_polynomial::CommitmentPolynomial`]: input
+    /// wires have degree 1, addition aligns to the larger degree, and multiplication sums the
+    /// degrees.
+    type HigherDegreeWire = usize;
+
+    fn h_add(
+        lhs: &Self::HigherDegreeWire,
+        rhs: &Self::HigherDegreeWire,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
+        Ok(*lhs.max(rhs))
+    }
+
+    fn h_addc(lhs: &Self::HigherDegreeWire, _: F2) -> CircuitResult<Self::HigherDegreeWire> {
+        Ok(*lhs)
+    }
+
+    fn h_mul(
+        lhs: &Self::HigherDegreeWire,
+        rhs: &Self::HigherDegreeWire,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
+        Ok(lhs + rhs)
+    }
+
+    fn h_mulc(lhs: &Self::HigherDegreeWire, _: F2) -> CircuitResult<Self::HigherDegreeWire> {
+        Ok(*lhs)
+    }
+
+    fn assert_zero_higher_degree<const INPUT_LEN: usize>(
+        &mut self,
+        _: &[Self::Wire; INPUT_LEN],
+        f: impl Fn([Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
+    ) {
+        self.challenge_count += 1;
+
+        // Each input wire lifts to a degree-1 commitment polynomial during traversal.
+        let degree = f([1; INPUT_LEN]);
+        self.max_higher_degree = self.max_higher_degree.max(degree);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rand::thread_rng;
@@ -112,7 +167,7 @@ mod tests {
     use mac_n_cheese_sieve_parser::text_parser::RelationReader;
     use swanky_field::FiniteRing;
     use swanky_field_binary::F2;
-    use swanky_sieve_ir_api::CircuitExecuter;
+    use swanky_sieve_ir_api::{CircuitExecuter, HigherDegreeBackend};
 
     use crate::circuit::CircuitIngestor;
     use crate::proof::{Circuit, prover_preparer::ProverPreparer};
@@ -231,6 +286,51 @@ mod tests {
         let circuit = load_circuit(many_mul)?;
         let counter = prepare_circuit(&circuit)?;
         assert_eq!(counter.count(), 7);
+        Ok(())
+    }
+
+    #[test]
+    fn higher_degree_operations_compute_correct_degrees() {
+        let x = 3;
+        let y = 2;
+
+        // Addition aligns to the larger degree, multiplication sums the degrees, and constant
+        // operations leave the degree unchanged.
+        assert_eq!(ProverPreparer::h_add(&x, &y).unwrap(), 3);
+        assert_eq!(ProverPreparer::h_mul(&x, &y).unwrap(), 5);
+        assert_eq!(ProverPreparer::h_addc(&y, F2::ONE).unwrap(), 2);
+        assert_eq!(ProverPreparer::h_mulc(&y, F2::ZERO).unwrap(), 2);
+    }
+
+    #[test]
+    fn higher_degree_constraints_track_max_degree() -> swanky_error::Result<()> {
+        let private_input: Vec<F2> = Vec::new();
+        let mut preparer = ProverPreparer::new(&private_input, 0)?;
+        assert_eq!(preparer.max_higher_degree(), 0);
+
+        // x0 * x1 * x2 * x3, a degree-4 constraint.
+        let wires = [F2::ONE, F2::ONE, F2::ZERO, F2::ONE];
+        preparer.assert_zero_higher_degree(&wires, |x| {
+            let x01 = ProverPreparer::h_mul(&x[0], &x[1]).unwrap();
+            let x23 = ProverPreparer::h_mul(&x[2], &x[3]).unwrap();
+            ProverPreparer::h_mul(&x01, &x23).unwrap()
+        });
+        assert_eq!(preparer.max_higher_degree(), 4);
+
+        // A subsequent lower-degree constraint (x0 * x1 + x2 * x3, degree 2) doesn't lower the
+        // maximum.
+        preparer.assert_zero_higher_degree(&wires, |x| {
+            let x01 = ProverPreparer::h_mul(&x[0], &x[1]).unwrap();
+            let x23 = ProverPreparer::h_mul(&x[2], &x[3]).unwrap();
+            ProverPreparer::h_add(&x01, &x23).unwrap()
+        });
+        assert_eq!(preparer.max_higher_degree(), 4);
+
+        // Higher degree constraints don't add witness values, but each needs a challenge.
+        let (witness, challenge_count) = preparer.into_parts();
+        assert!(witness.is_empty());
+        assert_eq!(challenge_count, 2);
+
         Ok(())
     }
 
