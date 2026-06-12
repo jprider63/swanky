@@ -226,7 +226,7 @@ pub fn batch_verify(
 }
 
 /// Compute base^exp in a finite field using repeated squaring.
-fn power(base: F128b, exp: usize) -> F128b {
+pub(crate) fn power(base: F128b, exp: usize) -> F128b {
     if exp == 0 {
         return F128b::ONE;
     }

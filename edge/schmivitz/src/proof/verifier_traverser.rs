@@ -2,8 +2,9 @@ use swanky_error::{ErrorKind, Result, bail};
 use swanky_field::FiniteRing;
 use swanky_field_binary::F2;
 use swanky_field_binary::F128b;
-use swanky_sieve_ir_api::{CircuitResult, FieldBackend};
+use swanky_sieve_ir_api::{CircuitResult, FieldBackend, HigherDegreeBackend};
 
+use crate::polynomial_constraint::power;
 use crate::proof::ChiGenerator;
 
 /// A [`VerifierTraverser`] allows the verifier to execute the gate-by-gate evaluation portion of
@@ -38,6 +39,17 @@ pub(crate) struct VerifierTraverser {
     /// Partial aggregation of the assert zero check.
     /// TODO: Add this to the specification and reference it.
     aggregate_assert_zero: F128b,
+
+    /// Challenge-weighted sums of the higher degree constraint evaluations, grouped by
+    /// constraint degree.
+    ///
+    /// After traversal, index $`d_i`$ holds $$`\sum_{i : \deg = d_i} \chi_i \cdot \gamma_i`$$
+    /// where $`\gamma_i = \rho_i(\Delta)`$ is the verifier's homomorphic evaluation of the
+    /// $`i`$th higher degree constraint (Fig. 3 in the better-conversions paper). The vector has
+    /// one entry per degree up to the maximum constraint degree (and is empty if the circuit has
+    /// no higher degree constraints); the degree alignment $`\Delta^{d - d_i}`$ is applied in
+    /// [`Proof::verify()`](crate::proof::Proof::verify) once the maximum degree $`d`$ is known.
+    higher_degree_aggregates: Vec<F128b>,
 }
 
 impl VerifierTraverser {
@@ -54,6 +66,7 @@ impl VerifierTraverser {
             assigned_witness_count: 0,
             aggregate: F128b::ZERO,
             aggregate_assert_zero: F128b::ZERO,
+            higher_degree_aggregates: Vec::new(),
         })
     }
 
@@ -83,11 +96,11 @@ impl VerifierTraverser {
         Ok(self.masked_witnesses[next_index])
     }
 
-    /// Decomposes into the aggregate component (a partial construction of `c~`) that was built
-    /// during full circuit traversal.
+    /// Decomposes into the aggregate components (a partial construction of `c~` and the higher
+    /// degree aggregates) that were built during full circuit traversal.
     ///
     /// This will fail if there were unused challenges or masked witnesses.
-    pub(crate) fn into_parts(self) -> Result<(F128b, F128b)> {
+    pub(crate) fn into_parts(self) -> Result<(F128b, F128b, Vec<F128b>)> {
         if self.assigned_witness_count != self.masked_witnesses.len() {
             bail!(
                 ErrorKind::OtherError,
@@ -96,7 +109,11 @@ impl VerifierTraverser {
                 self.assigned_witness_count
             );
         }
-        Ok((self.aggregate, self.aggregate_assert_zero))
+        Ok((
+            self.aggregate,
+            self.aggregate_assert_zero,
+            self.higher_degree_aggregates,
+        ))
     }
 }
 
@@ -152,5 +169,71 @@ impl FieldBackend<F2> for VerifierTraverser {
 
         self.aggregate_assert_zero += challenge * arg;
         Ok(())
+    }
+}
+
+impl HigherDegreeBackend<F2, F128b> for VerifierTraverser {
+    /// The verifier's evaluation $`\rho(\Delta)`$ of the constraint commitment polynomial, the
+    /// polynomial's degree, and $`\Delta`$ itself.
+    ///
+    /// The degree and $`\Delta`$ are carried in the wire because the gate operations are
+    /// associated functions (no access to `self`) but must mirror the degree alignment that
+    /// [`CommitmentPolynomial`](crate::commitment_polynomial::CommitmentPolynomial) applies on
+    /// the prover's side.
+    type HigherDegreeWire = (F128b, usize, F128b);
+
+    /// Mirrors [`CommitmentPolynomial::add`](crate::commitment_polynomial::CommitmentPolynomial::add):
+    /// with $`d = \max(d_1, d_2)`$, the sum is $`t^{d - d_1} \rho_1(t) + t^{d - d_2} \rho_2(t)`$.
+    fn h_add(
+        lhs: &Self::HigherDegreeWire,
+        rhs: &Self::HigherDegreeWire,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
+        let (eval_1, degree_1, delta) = *lhs;
+        let (eval_2, degree_2, _) = *rhs;
+        let degree = degree_1.max(degree_2);
+
+        let eval = power(delta, degree - degree_1) * eval_1
+            + power(delta, degree - degree_2) * eval_2;
+        Ok((eval, degree, delta))
+    }
+
+    /// Mirrors [`CommitmentPolynomial::addc`](crate::commitment_polynomial::CommitmentPolynomial::addc),
+    /// which adds $`c \cdot t^d`$.
+    fn h_addc(lhs: &Self::HigherDegreeWire, rhs: F2) -> CircuitResult<Self::HigherDegreeWire> {
+        let (eval, degree, delta) = *lhs;
+        Ok((eval + rhs * power(delta, degree), degree, delta))
+    }
+
+    fn h_mul(
+        lhs: &Self::HigherDegreeWire,
+        rhs: &Self::HigherDegreeWire,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
+        let (eval_1, degree_1, delta) = *lhs;
+        let (eval_2, degree_2, _) = *rhs;
+        Ok((eval_1 * eval_2, degree_1 + degree_2, delta))
+    }
+
+    fn h_mulc(lhs: &Self::HigherDegreeWire, rhs: F2) -> CircuitResult<Self::HigherDegreeWire> {
+        let (eval, degree, delta) = *lhs;
+        Ok((rhs * eval, degree, delta))
+    }
+
+    fn assert_zero_higher_degree<const INPUT_LEN: usize>(
+        &mut self,
+        inputs: &[Self::Wire; INPUT_LEN],
+        f: impl Fn([Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
+    ) {
+        // Each masked witness is the evaluation at Delta of the prover's degree-1 commitment
+        // polynomial for that wire.
+        let delta = self.verifier_key;
+        let (gamma, degree, _) = f(std::array::from_fn(|i| (inputs[i], 1, delta)));
+
+        // Group the challenge-weighted evaluations by degree; the Delta^(d - d_i) alignment is
+        // applied once the maximum degree d is known, after traversal.
+        let challenge = self.chi_challenge.next();
+        if degree >= self.higher_degree_aggregates.len() {
+            self.higher_degree_aggregates.resize(degree + 1, F128b::ZERO);
+        }
+        self.higher_degree_aggregates[degree] += challenge * gamma;
     }
 }

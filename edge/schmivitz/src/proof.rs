@@ -15,11 +15,12 @@ use std::{iter::zip, marker::PhantomData};
 use swanky_error::{ErrorKind, Result, bail};
 use swanky_field::{FiniteField, FiniteRing, IsSubFieldOf};
 use swanky_field_binary::{F2, F8b, F128b};
-use swanky_sieve_ir_api::{CircuitExecuter, HigherDegreeCircuitExecuter};
+use swanky_sieve_ir_api::HigherDegreeCircuitExecuter;
 
 use crate::{circuit::Circuit, vole::DecommitmentSerde};
 use crate::{
     parameters::{REPETITION_PARAM, SECURITY_PARAM, VOLE_SIZE_PARAM},
+    polynomial_constraint::power,
     proof::{
         prover_preparer::ProverPreparer, prover_traverser::ProverTraverser,
         transcript::ChiGenerator,
@@ -258,7 +259,7 @@ where
     ///
     pub fn verify<C>(&self, circuit: C, transcript: &mut Transcript) -> Result<()>
     where
-        C: CircuitExecuter<F2>, // Can't do higher order trait bounds... See https://github.com/rust-lang/rust/issues/108185#issuecomment-2819123578
+        C: HigherDegreeCircuitExecuter<F2, F128b>, // Can't do higher order trait bounds... See https://github.com/rust-lang/rust/issues/108185#issuecomment-2819123578
     {
         let mut transcript = transcript::Transcript::from(transcript);
         transcript.append_public_values();
@@ -326,7 +327,8 @@ where
             masked_witnesses,
         )?;
         circuit.execute(&mut verifier_traverser)?;
-        let (validation_aggregate, aggregate_assert_zero) = verifier_traverser.into_parts()?;
+        let (validation_aggregate, aggregate_assert_zero, higher_degree_aggregates) =
+            verifier_traverser.into_parts()?;
         log::info!("5: circuit traverser {:?}", t.elapsed());
 
         let t = std::time::Instant::now();
@@ -341,10 +343,6 @@ where
             &self.degree_1_commitment,
             &self.assert_zero_commitment,
         );
-        // TODO: Actually check the higher degree commitment (pi(Delta) = q in Fig. 3 of the
-        // better-conversions paper). This requires a `HigherDegreeBackend` implementation for
-        // `VerifierTraverser`; until then, circuits with higher degree constraints cannot be
-        // verified, but the prover's transcript must still be mirrored here.
         transcript.append_higher_degree_commitment(&self.higher_degree_commitment);
 
         // Get the VOLE decommitment challenge and make sure it's valid
@@ -364,7 +362,80 @@ where
             );
         }
 
+        // Higher degree constraint check (step 8 in Fig. 3 of the better-conversions paper):
+        // check that pi has degree at most d - 1 and that pi(Delta) = q.
+        self.verify_higher_degree_constraints(&reconstructed_voles, &higher_degree_aggregates)?;
+
         log::info!("6: last check {:?}", t.elapsed());
+
+        Ok(())
+    }
+
+    /// Check the batched higher degree constraints (step 8 in Fig. 3 of the better-conversions
+    /// paper).
+    ///
+    /// The `higher_degree_aggregates` are the challenge-weighted constraint evaluations from the
+    /// [`VerifierTraverser`], grouped by constraint degree. With $`d`$ the maximum constraint
+    /// degree, this computes
+    /// $$`q = \sum_{i \in [m]} \chi_i \Delta^{d - d_i} \gamma_i + \sum_{j=1}^{d-1} \Delta^{j-1} \nu_j`$$
+    /// and checks that the prover's $`\pi(t)`$ has degree at most $`d - 1`$ and that
+    /// $`\pi(\Delta) = q`$.
+    fn verify_higher_degree_constraints(
+        &self,
+        voles: &VoleV,
+        higher_degree_aggregates: &[F128b],
+    ) -> Result<()> {
+        // The degree-d coefficient of pi(t) is zero and omitted, so the prover sends exactly d
+        // coefficients. This also enforces the degree bound on pi.
+        let max_higher_degree = higher_degree_aggregates.len().saturating_sub(1);
+        if self.higher_degree_commitment.len() != max_higher_degree {
+            bail!(
+                ErrorKind::OtherError,
+                "Verification failed: expected {} higher degree commitment coefficients, got {}",
+                max_higher_degree,
+                self.higher_degree_commitment.len()
+            );
+        }
+        if max_higher_degree == 0 {
+            return Ok(());
+        }
+
+        let delta = voles.verifier_key();
+
+        // Constraint contributions: sum_i chi_i * Delta^(d - d_i) * gamma_i.
+        let mut expected = F128b::ZERO;
+        for (degree, aggregate) in higher_degree_aggregates.iter().enumerate() {
+            expected += power(delta, max_higher_degree - degree) * *aggregate;
+        }
+
+        // Mask contributions: sum_j Delta^(j-1) * nu_j, where nu_j = sigma_j(Delta) is composed
+        // from the verifier's tags for the mask VOLEs, which sit right after the witness VOLEs.
+        let witness_voles = voles.witness_voles();
+        let mut delta_power = F128b::ONE;
+        for j in 0..max_higher_degree - 1 {
+            let base = self.witness_commitment.len() + j * MASK_VOLE_SIZE;
+            let mut tags = [F128b::ZERO; MASK_VOLE_SIZE];
+            for (k, tag) in tags.iter_mut().enumerate() {
+                *tag = F8b::form_superfield(&witness_voles[base + k].into());
+            }
+            expected += delta_power * combine(tags);
+            delta_power *= delta;
+        }
+
+        // Evaluate the prover's pi(Delta) and compare.
+        let mut pi_at_delta = F128b::ZERO;
+        let mut delta_power = F128b::ONE;
+        for coefficient in &self.higher_degree_commitment {
+            pi_at_delta += *coefficient * delta_power;
+            delta_power *= delta;
+        }
+
+        if pi_at_delta != expected {
+            bail!(
+                ErrorKind::OtherError,
+                "Verification failed: Higher degree constraint check failed"
+            );
+        }
 
         Ok(())
     }
@@ -596,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn prove_handles_higher_degree_constraints() -> Result<()> {
+    fn higher_degree_proof_round_trips() -> Result<()> {
         // Witness satisfying x0 * x1 * x2 * x3 == 0.
         let private_input = [F2::ONE, F2::ONE, F2::ZERO, F2::ONE];
         let rng = &mut thread_rng();
@@ -612,6 +683,46 @@ mod tests {
         // The maximum constraint degree is 4, so pi(t) has degree at most 3 and is sent as 4
         // coefficients.
         assert_eq!(proof.higher_degree_commitment.len(), 4);
+
+        proof.verify(HigherDegreeCircuit, &mut transcript())
+    }
+
+    /// The same shape as [`HigherDegreeCircuit`] (same witness count and constraint degree), but
+    /// a different constraint: x0 * x1 * x1 * x3.
+    struct WrongHigherDegreeCircuit;
+
+    impl HigherDegreeCircuitExecuter<F2, F128b> for WrongHigherDegreeCircuit {
+        fn execute<B: HigherDegreeBackend<F2, F128b>>(&self, backend: &mut B) -> CircuitResult<()> {
+            let inputs = backend.inputs_private::<4>()?;
+            backend.assert_zero_higher_degree(&inputs, |x| {
+                let x01 = B::h_mul(&x[0], &x[1]).unwrap();
+                let x13 = B::h_mul(&x[1], &x[3]).unwrap();
+                B::h_mul(&x01, &x13).unwrap()
+            });
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn higher_degree_proof_fails_against_a_different_constraint() -> Result<()> {
+        let private_input = [F2::ONE, F2::ONE, F2::ZERO, F2::ONE];
+        let rng = &mut thread_rng();
+
+        let proof = Proof::<InsecureVole, InsecureCommitments>::prove(
+            HigherDegreeCircuit,
+            &private_input,
+            4,
+            &mut transcript(),
+            rng,
+        )?;
+
+        // The wrong circuit has the same transcript footprint, so only the higher degree
+        // constraint check (pi(Delta) = q) catches the mismatch.
+        assert!(
+            proof
+                .verify(WrongHigherDegreeCircuit, &mut transcript())
+                .is_err()
+        );
 
         Ok(())
     }
