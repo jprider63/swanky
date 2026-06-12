@@ -81,10 +81,10 @@
 //!     backend.assert_zero(&v2)?;
 //!
 //!     let inps = backend.inputs_private::<4>()?;
-//!     backend.assert_zero_higher_degree(&inps, |x| {
-//!         let x01 = B::h_mul(&x[0], &x[1]).unwrap();
-//!         let x23 = B::h_mul(&x[2], &x[3]).unwrap();
-//!         B::h_mul(&x01, &x23).unwrap()
+//!     backend.assert_zero_higher_degree(&inps, |b, x| {
+//!         let x01 = b.h_mul(&x[0], &x[1]).unwrap();
+//!         let x23 = b.h_mul(&x[2], &x[3]).unwrap();
+//!         b.h_mul(&x01, &x23).unwrap()
 //!     });
 //!     Ok(())
 //! }
@@ -187,24 +187,40 @@ pub trait HigherDegreeBackend<F, FE>: FieldBackend<F> {
 
     /// Field addition.
     fn h_add(
+        &self,
         lhs: &Self::HigherDegreeWire,
         rhs: &Self::HigherDegreeWire,
     ) -> CircuitResult<Self::HigherDegreeWire>;
 
     /// Field addition with a constant.
-    fn h_addc(lhs: &Self::HigherDegreeWire, rhs: F) -> CircuitResult<Self::HigherDegreeWire>;
+    fn h_addc(
+        &self,
+        lhs: &Self::HigherDegreeWire,
+        rhs: F,
+    ) -> CircuitResult<Self::HigherDegreeWire>;
 
     /// Field multiplication.
-    fn h_mul(lhs: &Self::HigherDegreeWire, rhs: &Self::HigherDegreeWire) -> CircuitResult<Self::HigherDegreeWire>;
+    fn h_mul(
+        &self,
+        lhs: &Self::HigherDegreeWire,
+        rhs: &Self::HigherDegreeWire,
+    ) -> CircuitResult<Self::HigherDegreeWire>;
 
     /// Field multiplication with a constant.
-    fn h_mulc(lhs: &Self::HigherDegreeWire, rhs: F) -> CircuitResult<Self::HigherDegreeWire>;
+    fn h_mulc(
+        &self,
+        lhs: &Self::HigherDegreeWire,
+        rhs: F,
+    ) -> CircuitResult<Self::HigherDegreeWire>;
 
     /// Assert that a higher degree constraint equals 0.
+    ///
+    /// The constraint `f` receives a reference to the backend so it can apply the higher degree
+    /// gate operations to its wires.
     fn assert_zero_higher_degree<const INPUT_LEN: usize>(
         &mut self,
         inputs: &[Self::Wire; INPUT_LEN],
-        f: impl Fn([Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
+        f: impl Fn(&Self, [Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
     );
     /*
     /// Helper function to return the wire value returned by a higher degree gate.

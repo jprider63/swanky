@@ -125,36 +125,46 @@ impl<'a> HigherDegreeBackend<F2, F128b> for ProverPreparer<'a> {
     type HigherDegreeWire = usize;
 
     fn h_add(
+        &self,
         lhs: &Self::HigherDegreeWire,
         rhs: &Self::HigherDegreeWire,
     ) -> CircuitResult<Self::HigherDegreeWire> {
         Ok(*lhs.max(rhs))
     }
 
-    fn h_addc(lhs: &Self::HigherDegreeWire, _: F2) -> CircuitResult<Self::HigherDegreeWire> {
+    fn h_addc(
+        &self,
+        lhs: &Self::HigherDegreeWire,
+        _: F2,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
         Ok(*lhs)
     }
 
     fn h_mul(
+        &self,
         lhs: &Self::HigherDegreeWire,
         rhs: &Self::HigherDegreeWire,
     ) -> CircuitResult<Self::HigherDegreeWire> {
         Ok(lhs + rhs)
     }
 
-    fn h_mulc(lhs: &Self::HigherDegreeWire, _: F2) -> CircuitResult<Self::HigherDegreeWire> {
+    fn h_mulc(
+        &self,
+        lhs: &Self::HigherDegreeWire,
+        _: F2,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
         Ok(*lhs)
     }
 
     fn assert_zero_higher_degree<const INPUT_LEN: usize>(
         &mut self,
         _: &[Self::Wire; INPUT_LEN],
-        f: impl Fn([Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
+        f: impl Fn(&Self, [Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
     ) {
         self.challenge_count += 1;
 
         // Each input wire lifts to a degree-1 commitment polynomial during traversal.
-        let degree = f([1; INPUT_LEN]);
+        let degree = f(self, [1; INPUT_LEN]);
         self.max_higher_degree = self.max_higher_degree.max(degree);
     }
 }
@@ -291,15 +301,17 @@ mod tests {
 
     #[test]
     fn higher_degree_operations_compute_correct_degrees() {
+        let private_input: Vec<F2> = Vec::new();
+        let preparer = ProverPreparer::new(&private_input, 0).unwrap();
         let x = 3;
         let y = 2;
 
         // Addition aligns to the larger degree, multiplication sums the degrees, and constant
         // operations leave the degree unchanged.
-        assert_eq!(ProverPreparer::h_add(&x, &y).unwrap(), 3);
-        assert_eq!(ProverPreparer::h_mul(&x, &y).unwrap(), 5);
-        assert_eq!(ProverPreparer::h_addc(&y, F2::ONE).unwrap(), 2);
-        assert_eq!(ProverPreparer::h_mulc(&y, F2::ZERO).unwrap(), 2);
+        assert_eq!(preparer.h_add(&x, &y).unwrap(), 3);
+        assert_eq!(preparer.h_mul(&x, &y).unwrap(), 5);
+        assert_eq!(preparer.h_addc(&y, F2::ONE).unwrap(), 2);
+        assert_eq!(preparer.h_mulc(&y, F2::ZERO).unwrap(), 2);
     }
 
     #[test]
@@ -310,19 +322,19 @@ mod tests {
 
         // x0 * x1 * x2 * x3, a degree-4 constraint.
         let wires = [F2::ONE, F2::ONE, F2::ZERO, F2::ONE];
-        preparer.assert_zero_higher_degree(&wires, |x| {
-            let x01 = ProverPreparer::h_mul(&x[0], &x[1]).unwrap();
-            let x23 = ProverPreparer::h_mul(&x[2], &x[3]).unwrap();
-            ProverPreparer::h_mul(&x01, &x23).unwrap()
+        preparer.assert_zero_higher_degree(&wires, |b, x| {
+            let x01 = b.h_mul(&x[0], &x[1]).unwrap();
+            let x23 = b.h_mul(&x[2], &x[3]).unwrap();
+            b.h_mul(&x01, &x23).unwrap()
         });
         assert_eq!(preparer.max_higher_degree(), 4);
 
         // A subsequent lower-degree constraint (x0 * x1 + x2 * x3, degree 2) doesn't lower the
         // maximum.
-        preparer.assert_zero_higher_degree(&wires, |x| {
-            let x01 = ProverPreparer::h_mul(&x[0], &x[1]).unwrap();
-            let x23 = ProverPreparer::h_mul(&x[2], &x[3]).unwrap();
-            ProverPreparer::h_add(&x01, &x23).unwrap()
+        preparer.assert_zero_higher_degree(&wires, |b, x| {
+            let x01 = b.h_mul(&x[0], &x[1]).unwrap();
+            let x23 = b.h_mul(&x[2], &x[3]).unwrap();
+            b.h_add(&x01, &x23).unwrap()
         });
         assert_eq!(preparer.max_higher_degree(), 4);
 

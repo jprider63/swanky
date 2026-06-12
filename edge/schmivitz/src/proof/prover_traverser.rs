@@ -229,37 +229,50 @@ impl<VOLE: RandomVoleP> HigherDegreeBackend<F2, F128b> for ProverTraverser<VOLE>
     type HigherDegreeWire = CommitmentPolynomial<F2, F128b>;
 
     fn h_add(
+        &self,
         lhs: &Self::HigherDegreeWire,
         rhs: &Self::HigherDegreeWire,
     ) -> CircuitResult<Self::HigherDegreeWire> {
         Ok(lhs.add(rhs))
     }
 
-    fn h_addc(lhs: &Self::HigherDegreeWire, rhs: F2) -> CircuitResult<Self::HigherDegreeWire> {
+    fn h_addc(
+        &self,
+        lhs: &Self::HigherDegreeWire,
+        rhs: F2,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
         Ok(lhs.addc(rhs))
     }
 
     fn h_mul(
+        &self,
         lhs: &Self::HigherDegreeWire,
         rhs: &Self::HigherDegreeWire,
     ) -> CircuitResult<Self::HigherDegreeWire> {
         Ok(lhs.mul(rhs))
     }
 
-    fn h_mulc(lhs: &Self::HigherDegreeWire, rhs: F2) -> CircuitResult<Self::HigherDegreeWire> {
+    fn h_mulc(
+        &self,
+        lhs: &Self::HigherDegreeWire,
+        rhs: F2,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
         Ok(lhs.mulc(rhs))
     }
 
     fn assert_zero_higher_degree<const INPUT_LEN: usize>(
         &mut self,
         inputs: &[Self::Wire; INPUT_LEN],
-        f: impl Fn([Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
+        f: impl Fn(&Self, [Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
     ) {
         // Lift each input wire (value, VOLE mask) into its degree-1 commitment polynomial
         // ρ(t) = w + x·t and evaluate the constraint over the polynomials.
-        let constraint = f(std::array::from_fn(|i| {
-            CommitmentPolynomial::from_base_vole(inputs[i].0, inputs[i].1)
-        }));
+        let constraint = f(
+            self,
+            std::array::from_fn(|i| {
+                CommitmentPolynomial::from_base_vole(inputs[i].0, inputs[i].1)
+            }),
+        );
 
         // The highest-degree coefficient is the constraint evaluated on the witness values, so an
         // honest prover always commits to zero here.
@@ -317,20 +330,20 @@ mod tests {
         let product_values = [F2::ONE, F2::ONE, F2::ZERO, F2::ONE];
         let product_wires: [(F2, F128b); 4] =
             std::array::from_fn(|i| (product_values[i], F128b::random(rng)));
-        traverser.assert_zero_higher_degree(&product_wires, |x| {
-            let x01 = Traverser::h_mul(&x[0], &x[1]).unwrap();
-            let x23 = Traverser::h_mul(&x[2], &x[3]).unwrap();
-            Traverser::h_mul(&x01, &x23).unwrap()
+        traverser.assert_zero_higher_degree(&product_wires, |b, x| {
+            let x01 = b.h_mul(&x[0], &x[1]).unwrap();
+            let x23 = b.h_mul(&x[2], &x[3]).unwrap();
+            b.h_mul(&x01, &x23).unwrap()
         });
 
         // Witness satisfying x0 * x1 + x2 * x3 == 0, a degree-2 constraint.
         let sum_values = [F2::ONE; 4];
         let sum_wires: [(F2, F128b); 4] =
             std::array::from_fn(|i| (sum_values[i], F128b::random(rng)));
-        traverser.assert_zero_higher_degree(&sum_wires, |x| {
-            let x01 = Traverser::h_mul(&x[0], &x[1]).unwrap();
-            let x23 = Traverser::h_mul(&x[2], &x[3]).unwrap();
-            Traverser::h_add(&x01, &x23).unwrap()
+        traverser.assert_zero_higher_degree(&sum_wires, |b, x| {
+            let x01 = b.h_mul(&x[0], &x[1]).unwrap();
+            let x23 = b.h_mul(&x[2], &x[3]).unwrap();
+            b.h_add(&x01, &x23).unwrap()
         });
 
         let (_, _, _, aggregate, _) = traverser.into_parts().unwrap();
@@ -361,11 +374,12 @@ mod tests {
     #[test]
     fn constant_operations_apply_to_the_committed_value() {
         let rng = &mut thread_rng();
+        let traverser = test_traverser(F128b::random(rng), 0);
         let poly = CommitmentPolynomial::from_base_vole(F2::ONE, F128b::random(rng));
 
-        let sum = Traverser::h_addc(&poly, F2::ONE).unwrap();
+        let sum = traverser.h_addc(&poly, F2::ONE).unwrap();
         assert_eq!(sum.highest_degree(), F2::ZERO);
-        let scaled = Traverser::h_mulc(&poly, F2::ZERO).unwrap();
+        let scaled = traverser.h_mulc(&poly, F2::ZERO).unwrap();
         assert_eq!(scaled.highest_degree(), F2::ZERO);
     }
 }

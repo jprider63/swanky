@@ -173,60 +173,68 @@ impl FieldBackend<F2> for VerifierTraverser {
 }
 
 impl HigherDegreeBackend<F2, F128b> for VerifierTraverser {
-    /// The verifier's evaluation $`\rho(\Delta)`$ of the constraint commitment polynomial, the
-    /// polynomial's degree, and $`\Delta`$ itself.
+    /// The verifier's evaluation $`\rho(\Delta)`$ of the constraint commitment polynomial, along
+    /// with the polynomial's degree.
     ///
-    /// The degree and $`\Delta`$ are carried in the wire because the gate operations are
-    /// associated functions (no access to `self`) but must mirror the degree alignment that
+    /// The degree is needed because the gate operations must mirror the degree alignment that
     /// [`CommitmentPolynomial`](crate::commitment_polynomial::CommitmentPolynomial) applies on
     /// the prover's side.
-    type HigherDegreeWire = (F128b, usize, F128b);
+    type HigherDegreeWire = (F128b, usize);
 
     /// Mirrors [`CommitmentPolynomial::add`](crate::commitment_polynomial::CommitmentPolynomial::add):
     /// with $`d = \max(d_1, d_2)`$, the sum is $`t^{d - d_1} \rho_1(t) + t^{d - d_2} \rho_2(t)`$.
     fn h_add(
+        &self,
         lhs: &Self::HigherDegreeWire,
         rhs: &Self::HigherDegreeWire,
     ) -> CircuitResult<Self::HigherDegreeWire> {
-        let (eval_1, degree_1, delta) = *lhs;
-        let (eval_2, degree_2, _) = *rhs;
+        let (eval_1, degree_1) = *lhs;
+        let (eval_2, degree_2) = *rhs;
         let degree = degree_1.max(degree_2);
 
-        let eval = power(delta, degree - degree_1) * eval_1
-            + power(delta, degree - degree_2) * eval_2;
-        Ok((eval, degree, delta))
+        let eval = power(self.verifier_key, degree - degree_1) * eval_1
+            + power(self.verifier_key, degree - degree_2) * eval_2;
+        Ok((eval, degree))
     }
 
     /// Mirrors [`CommitmentPolynomial::addc`](crate::commitment_polynomial::CommitmentPolynomial::addc),
     /// which adds $`c \cdot t^d`$.
-    fn h_addc(lhs: &Self::HigherDegreeWire, rhs: F2) -> CircuitResult<Self::HigherDegreeWire> {
-        let (eval, degree, delta) = *lhs;
-        Ok((eval + rhs * power(delta, degree), degree, delta))
+    fn h_addc(
+        &self,
+        lhs: &Self::HigherDegreeWire,
+        rhs: F2,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
+        let (eval, degree) = *lhs;
+        Ok((eval + rhs * power(self.verifier_key, degree), degree))
     }
 
     fn h_mul(
+        &self,
         lhs: &Self::HigherDegreeWire,
         rhs: &Self::HigherDegreeWire,
     ) -> CircuitResult<Self::HigherDegreeWire> {
-        let (eval_1, degree_1, delta) = *lhs;
-        let (eval_2, degree_2, _) = *rhs;
-        Ok((eval_1 * eval_2, degree_1 + degree_2, delta))
+        let (eval_1, degree_1) = *lhs;
+        let (eval_2, degree_2) = *rhs;
+        Ok((eval_1 * eval_2, degree_1 + degree_2))
     }
 
-    fn h_mulc(lhs: &Self::HigherDegreeWire, rhs: F2) -> CircuitResult<Self::HigherDegreeWire> {
-        let (eval, degree, delta) = *lhs;
-        Ok((rhs * eval, degree, delta))
+    fn h_mulc(
+        &self,
+        lhs: &Self::HigherDegreeWire,
+        rhs: F2,
+    ) -> CircuitResult<Self::HigherDegreeWire> {
+        let (eval, degree) = *lhs;
+        Ok((rhs * eval, degree))
     }
 
     fn assert_zero_higher_degree<const INPUT_LEN: usize>(
         &mut self,
         inputs: &[Self::Wire; INPUT_LEN],
-        f: impl Fn([Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
+        f: impl Fn(&Self, [Self::HigherDegreeWire; INPUT_LEN]) -> Self::HigherDegreeWire,
     ) {
         // Each masked witness is the evaluation at Delta of the prover's degree-1 commitment
         // polynomial for that wire.
-        let delta = self.verifier_key;
-        let (gamma, degree, _) = f(std::array::from_fn(|i| (inputs[i], 1, delta)));
+        let (gamma, degree) = f(self, std::array::from_fn(|i| (inputs[i], 1)));
 
         // Group the challenge-weighted evaluations by degree; the Delta^(d - d_i) alignment is
         // applied once the maximum degree d is known, after traversal.

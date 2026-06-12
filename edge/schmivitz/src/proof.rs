@@ -657,10 +657,10 @@ mod tests {
     impl HigherDegreeCircuitExecuter<F2, F128b> for HigherDegreeCircuit {
         fn execute<B: HigherDegreeBackend<F2, F128b>>(&self, backend: &mut B) -> CircuitResult<()> {
             let inputs = backend.inputs_private::<4>()?;
-            backend.assert_zero_higher_degree(&inputs, |x| {
-                let x01 = B::h_mul(&x[0], &x[1]).unwrap();
-                let x23 = B::h_mul(&x[2], &x[3]).unwrap();
-                B::h_mul(&x01, &x23).unwrap()
+            backend.assert_zero_higher_degree(&inputs, |b, x| {
+                let x01 = b.h_mul(&x[0], &x[1]).unwrap();
+                let x23 = b.h_mul(&x[2], &x[3]).unwrap();
+                b.h_mul(&x01, &x23).unwrap()
             });
             Ok(())
         }
@@ -694,10 +694,10 @@ mod tests {
     impl HigherDegreeCircuitExecuter<F2, F128b> for WrongHigherDegreeCircuit {
         fn execute<B: HigherDegreeBackend<F2, F128b>>(&self, backend: &mut B) -> CircuitResult<()> {
             let inputs = backend.inputs_private::<4>()?;
-            backend.assert_zero_higher_degree(&inputs, |x| {
-                let x01 = B::h_mul(&x[0], &x[1]).unwrap();
-                let x13 = B::h_mul(&x[1], &x[3]).unwrap();
-                B::h_mul(&x01, &x13).unwrap()
+            backend.assert_zero_higher_degree(&inputs, |b, x| {
+                let x01 = b.h_mul(&x[0], &x[1]).unwrap();
+                let x13 = b.h_mul(&x[1], &x[3]).unwrap();
+                b.h_mul(&x01, &x13).unwrap()
             });
             Ok(())
         }
